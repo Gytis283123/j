@@ -1,0 +1,372 @@
+name: Samsung Galaxy A54x TWRP Recovery Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      MANIFEST_URL:
+        description: 'TWRP Manifest URL'
+        required: true
+        default: 'https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp'
+
+      MANIFEST_BRANCH:
+        description: 'TWRP Manifest Branch'
+        required: true
+        default: 'twrp-12.1'
+
+      DEVICE_TREE_URL:
+        description: 'A54x Device Tree URL'
+        required: true
+        default: 'https://github.com/Mesa-Labs-Archive/android_device_samsung_a54x'
+
+      DEVICE_TREE_BRANCH:
+        description: 'A54x Device Tree Branch'
+        required: true
+        default: 'android-12.1'
+
+      DEVICE_PATH:
+        description: 'Device Tree Path'
+        required: true
+        default: 'device/samsung/a54x'
+
+      COMMON_TREE_URL:
+        description: 'Common Device Tree URL (optional)'
+        required: false
+        default: ''
+
+      COMMON_PATH:
+        description: 'Common Device Tree Path (optional)'
+        required: false
+        default: ''
+
+      DEVICE_NAME:
+        description: 'Device Codename'
+        required: true
+        default: 'a54x'
+
+      MAKEFILE_NAME:
+        description: 'Recovery Makefile'
+        required: true
+        default: 'twrp_a54x'
+
+      BUILD_TARGET:
+        description: 'Recovery Build Target'
+        required: true
+        default: 'recovery'
+
+jobs:
+  build:
+    if: github.event.repository.owner.id == github.event.sender.id
+    runs-on: ubuntu-22.04
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Display Run Parameters
+        env:
+          MANIFEST_URL: ${{ github.event.inputs.MANIFEST_URL }}
+          MANIFEST_BRANCH: ${{ github.event.inputs.MANIFEST_BRANCH }}
+          DEVICE_TREE_URL: ${{ github.event.inputs.DEVICE_TREE_URL }}
+          DEVICE_TREE_BRANCH: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}
+          DEVICE_PATH: ${{ github.event.inputs.DEVICE_PATH }}
+          DEVICE_NAME: ${{ github.event.inputs.DEVICE_NAME }}
+          MAKEFILE_NAME: ${{ github.event.inputs.MAKEFILE_NAME }}
+          BUILD_TARGET: ${{ github.event.inputs.BUILD_TARGET }}
+        run: |
+          echo "========================================"
+          echo " Samsung Galaxy A54 5G Recovery Build"
+          echo "========================================"
+          echo "Device: $DEVICE_NAME"
+          echo "Model: SM-A546B"
+          echo "Codename: a54x"
+          echo "Platform: Exynos 1380"
+          echo "Manifest: $MANIFEST_BRANCH"
+          echo "Device Tree: $DEVICE_TREE_BRANCH"
+          echo "Build Target: $BUILD_TARGET"
+          echo "========================================"
+
+      - name: Check Out
+        uses: actions/checkout@v4
+
+      - name: Cleanup
+        uses: rokibhasansagar/slimhub_actions@main
+
+      - name: Prepare the Environment
+        run: |
+          sudo apt-get update
+
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            bc \
+            bison \
+            build-essential \
+            ccache \
+            curl \
+            flex \
+            g++-multilib \
+            gcc-multilib \
+            git \
+            git-lfs \
+            gnupg \
+            gperf \
+            imagemagick \
+            lib32ncurses-dev \
+            lib32readline-dev \
+            lib32z1-dev \
+            libelf-dev \
+            liblz4-tool \
+            libncurses-dev \
+            libssl-dev \
+            libxml2 \
+            libxml2-utils \
+            lzop \
+            pngcrush \
+            python3 \
+            python-is-python3 \
+            python3-pip \
+            rsync \
+            schedtool \
+            squashfs-tools \
+            unzip \
+            xsltproc \
+            zip \
+            zlib1g-dev \
+            liblzma-dev \
+            libzstd-dev \
+            libncurses5-dev \
+            libncursesw5-dev \
+            libffi-dev
+
+      - name: Install OpenJDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: '11'
+
+      - name: Setup SSH Keys
+        if: |
+          startsWith(github.event.inputs.MANIFEST_URL, 'git@github.com') ||
+          startsWith(github.event.inputs.DEVICE_TREE_URL, 'git@github.com') ||
+          startsWith(github.event.inputs.COMMON_TREE_URL, 'git@github.com')
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Install Repo
+        run: |
+          mkdir -p "$HOME/bin"
+
+          curl -fsSL \
+            https://storage.googleapis.com/git-repo-downloads/repo \
+            -o "$HOME/bin/repo"
+
+          chmod +x "$HOME/bin/repo"
+
+          sudo ln -sf "$HOME/bin/repo" /usr/local/bin/repo
+
+          repo version
+
+      - name: Initialize Repo
+        env:
+          MANIFEST_URL: ${{ github.event.inputs.MANIFEST_URL }}
+          MANIFEST_BRANCH: ${{ github.event.inputs.MANIFEST_BRANCH }}
+        run: |
+          mkdir -p workspace
+          cd workspace
+
+          git config --global user.name "Recovery Builder"
+          git config --global user.email "recovery-builder@users.noreply.github.com"
+
+          repo init \
+            --depth=1 \
+            -u "$MANIFEST_URL" \
+            -b "$MANIFEST_BRANCH"
+
+      - name: Repo Sync
+        working-directory: workspace
+        run: |
+          repo sync \
+            -c \
+            -j2 \
+            --force-sync \
+            --no-clone-bundle
+
+      - name: Clone A54x Device Tree
+        working-directory: workspace
+        env:
+          TREE_URL: ${{ github.event.inputs.DEVICE_TREE_URL }}
+          TREE_BRANCH: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}
+          DEVICE_PATH: ${{ github.event.inputs.DEVICE_PATH }}
+        run: |
+          mkdir -p "$(dirname "$DEVICE_PATH")"
+
+          git clone \
+            --depth=1 \
+            -b "$TREE_BRANCH" \
+            "$TREE_URL" \
+            "$DEVICE_PATH"
+
+          echo "Device tree cloned successfully."
+
+      - name: Clone Common Tree
+        if: |
+          github.event.inputs.COMMON_TREE_URL != '' &&
+          github.event.inputs.COMMON_PATH != ''
+        working-directory: workspace
+        env:
+          COMMON_URL: ${{ github.event.inputs.COMMON_TREE_URL }}
+          COMMON_PATH: ${{ github.event.inputs.COMMON_PATH }}
+          TREE_BRANCH: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}
+        run: |
+          mkdir -p "$(dirname "$COMMON_PATH")"
+
+          git clone \
+            --depth=1 \
+            -b "$TREE_BRANCH" \
+            "$COMMON_URL" \
+            "$COMMON_PATH"
+
+          echo "Common tree cloned successfully."
+
+      - name: Sync Device Dependencies
+        working-directory: workspace
+        env:
+          DEVICE_PATH: ${{ github.event.inputs.DEVICE_PATH }}
+        run: |
+          DEPENDENCIES="$DEVICE_PATH/twrp.dependencies"
+
+          if [ -f "$DEPENDENCIES" ]; then
+            echo "Found TWRP dependencies."
+
+            if [ -f "$GITHUB_WORKSPACE/scripts/convert.sh" ]; then
+              bash "$GITHUB_WORKSPACE/scripts/convert.sh" "$DEPENDENCIES"
+            fi
+
+            repo sync -c -j2 --force-sync
+          else
+            echo "No twrp.dependencies file found."
+          fi
+
+      - name: Set Swap Space
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 12
+
+      - name: Verify Build Configuration
+        working-directory: workspace
+        env:
+          DEVICE_PATH: ${{ github.event.inputs.DEVICE_PATH }}
+        run: |
+          set -e
+
+          echo "Checking build environment..."
+
+          test -f build/envsetup.sh
+
+          if [ ! -d "$DEVICE_PATH" ]; then
+            echo "ERROR: Device tree does not exist!"
+            exit 1
+          fi
+
+          if [ ! -f "$DEVICE_PATH/AndroidProducts.mk" ]; then
+            echo "ERROR: AndroidProducts.mk not found!"
+            exit 1
+          fi
+
+          if [ ! -f "$DEVICE_PATH/BoardConfig.mk" ]; then
+            echo "ERROR: BoardConfig.mk not found!"
+            exit 1
+          fi
+
+          if [ ! -f "$DEVICE_PATH/twrp_a54x.mk" ]; then
+            echo "ERROR: twrp_a54x.mk not found!"
+            exit 1
+          fi
+
+          echo "Device tree verified."
+
+      - name: Building A54x Recovery
+        working-directory: workspace
+        env:
+          MAKEFILE_NAME: ${{ github.event.inputs.MAKEFILE_NAME }}
+          BUILD_TARGET: ${{ github.event.inputs.BUILD_TARGET }}
+        run: |
+          set -e
+
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export USE_CCACHE=1
+
+          ccache -M 5G
+
+          source build/envsetup.sh
+
+          echo "Lunch target: ${MAKEFILE_NAME}-eng"
+
+          lunch "${MAKEFILE_NAME}-eng"
+
+          echo "Starting recovery build..."
+
+          mka "${BUILD_TARGET}image" -j2
+
+          echo "Recovery build completed."
+
+      - name: Verify Recovery Output
+        env:
+          DEVICE_NAME: ${{ github.event.inputs.DEVICE_NAME }}
+          BUILD_TARGET: ${{ github.event.inputs.BUILD_TARGET }}
+        run: |
+          set -e
+
+          OUTPUT="workspace/out/target/product/$DEVICE_NAME"
+          IMAGE="$OUTPUT/${BUILD_TARGET}.img"
+
+          echo "Checking output: $OUTPUT"
+
+          if [ ! -d "$OUTPUT" ]; then
+            echo "ERROR: Output directory missing!"
+            exit 1
+          fi
+
+          if [ ! -f "$IMAGE" ]; then
+            echo "ERROR: Recovery image missing!"
+            ls -lah "$OUTPUT"
+            exit 1
+          fi
+
+          echo "Recovery image generated successfully!"
+          ls -lh "$IMAGE"
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/${{ github.event.inputs.BUILD_TARGET }}.img
+            workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
+            workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*vendor*.img
+          name: A54x-TWRP-${{ github.run_id }}
+          tag_name: a54x-${{ github.run_id }}
+          body: |
+            Samsung Galaxy A54 5G
+
+            Device: a54x
+            Model: SM-A546B
+            Platform: Exynos 1380
+
+            Manifest:
+            ${{ github.event.inputs.MANIFEST_URL }}
+
+            Manifest Branch:
+            ${{ github.event.inputs.MANIFEST_BRANCH }}
+
+            Device Tree:
+            ${{ github.event.inputs.DEVICE_TREE_URL }}
+
+            Device Tree Branch:
+            ${{ github.event.inputs.DEVICE_TREE_BRANCH }}
+
+            Build Target:
+            ${{ github.event.inputs.BUILD_TARGET }}
+
+            GitHub Actions Run:
+            ${{ github.run_id }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
